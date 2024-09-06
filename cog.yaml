@@ -6,9 +6,9 @@ build:
   cuda: "12.1"
   python_version: "3.11"
   python_packages:
-    - "torch==2.2"
+    - "torch>2.3"
     - "torchvision"
-    - "diffusers==0.30.0"
+    - "git+https://github.com/huggingface/diffusers.git@249a9e48e8f8aac4356d5a285c8ba0c600a80f64"
     - "transformers==4.43.3"
     - "accelerate==0.33.0"
     - "sentencepiece==0.2.0"

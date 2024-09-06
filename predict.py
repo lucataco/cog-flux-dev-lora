@@ -16,11 +16,11 @@ from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker
 )
 
-MODEL_CACHE = "checkpoints"
-MODEL_URL = "https://weights.replicate.delivery/default/black-forest-labs/FLUX.1-dev/model-cache.tar"
+MODEL_CACHE = "FLUX.1-dev"
 SAFETY_CACHE = "safety-cache"
 FEATURE_EXTRACTOR = "/src/feature-extractor"
 SAFETY_URL = "https://weights.replicate.delivery/default/sdxl/safety-1.0.tar"
+MODEL_URL = "https://weights.replicate.delivery/default/black-forest-labs/FLUX.1-dev/files.tar"
 
 ASPECT_RATIOS = {
     "1:1": (1024, 1024),
@@ -41,7 +41,7 @@ def download_weights(url, dest, file=False):
     print("downloading url: ", url)
     print("downloading to: ", dest)
     if not file:
-        subprocess.check_call(["pget", "-x", url, dest], close_fds=False)
+        subprocess.check_call(["pget", "-xf", url, dest], close_fds=False)
     else:
         subprocess.check_call(["pget", url, dest], close_fds=False)
     print("downloading took: ", time.time() - start)
@@ -50,10 +50,9 @@ class Predictor(BasePredictor):
     def setup(self) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
         start = time.time()
-        # Dont pull weights
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
         self.weights_cache = WeightsDownloadCache()
+        self.last_loaded_lora = None
 
         print("Loading safety checker...")
         if not os.path.exists(SAFETY_CACHE):
@@ -65,19 +64,13 @@ class Predictor(BasePredictor):
         
         print("Loading Flux txt2img Pipeline")
         if not os.path.exists(MODEL_CACHE):
-            download_weights(MODEL_URL, MODEL_CACHE)
+            download_weights(MODEL_URL, '.')
         self.txt2img_pipe = FluxPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-dev",
+            MODEL_CACHE,
             torch_dtype=torch.bfloat16,
             cache_dir=MODEL_CACHE
         ).to("cuda")
 
-        # Save some VRAM by offloading the model to CPU
-        vram = int(torch.cuda.get_device_properties(0).total_memory/(1024*1024*1024))
-        if vram < 40:
-            print("GPU VRAM < 40Gb - Offloading model to CPU")
-            self.txt2img_pipe.enable_model_cpu_offload()
-        
         print("setup took: ", time.time() - start)
 
     @torch.amp.autocast('cuda')
@@ -156,44 +149,50 @@ class Predictor(BasePredictor):
         pipe = self.txt2img_pipe
 
         if hf_lora is not None:
-            joint_attention_kwargs={"scale": lora_scale}
-            flux_kwargs["joint_attention_kwargs"] = joint_attention_kwargs
-            if re.match(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$", hf_lora):
-                print(f"Downloading LoRA weights from - HF path: {hf_lora}")
-                pipe.load_lora_weights(hf_lora)
-            # Check for Replicate tar file
-            elif re.match(r"^https?://replicate.delivery/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/trained_model.tar", hf_lora):
-                print(f"Downloading LoRA weights from - Replicate URL: {hf_lora}")
-                local_weights_cache = self.weights_cache.ensure(hf_lora)
-                lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/lora.safetensors")
-                pipe.load_lora_weights(lora_path)
-            # Check for Huggingface URL
-            elif re.match(r"^https?://huggingface.co", hf_lora):
-                print(f"Downloading LoRA weights from - HF URL: {hf_lora}")
-                huggingface_slug = re.search(r"^https?://huggingface.co/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)", hf_lora).group(1)
-                weight_name = hf_lora.split('/')[-1]
-                print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {weight_name}")
-                pipe.load_lora_weights(huggingface_slug, weight_name=weight_name)
-            # Check for Civitai URL (like https://civitai.com/api/download/models/735262?type=Model&format=SafeTensor)
-            elif re.match(r"^https?://civitai.com/api/download/models/[0-9]+\?type=Model&format=SafeTensor", hf_lora):
-                # split url to get first part of the url, everythin before '?type'
-                civitai_slug = hf_lora.split('?type')[0]
-                print(f"Downloading LoRA weights from - Civitai URL: {civitai_slug}")
-                lora_path = self.weights_cache.ensure(hf_lora, file=True)
-                pipe.load_lora_weights(lora_path)
-            # Check for URL to a .safetensors file
-            elif hf_lora.endswith('.safetensors'):
-                print(f"Downloading LoRA weights from - safetensor URL: {hf_lora}")
-                try:
+            flux_kwargs["joint_attention_kwargs"] = {"scale": lora_scale}
+            t1 = time.time()
+            # check if extra_lora is new
+            if hf_lora != self.last_loaded_lora:
+                pipe.unload_lora_weights()
+                if re.match(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$", hf_lora):
+                    print(f"Downloading LoRA weights from - HF path: {hf_lora}")
+                    pipe.load_lora_weights(hf_lora)
+                # Check for Replicate tar file
+                elif re.match(r"^https?://replicate.delivery/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/trained_model.tar", hf_lora):
+                    print(f"Downloading LoRA weights from - Replicate URL: {hf_lora}")
+                    local_weights_cache = self.weights_cache.ensure(hf_lora)
+                    lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/lora.safetensors")
+                    pipe.load_lora_weights(lora_path)
+                # Check for Huggingface URL
+                elif re.match(r"^https?://huggingface.co", hf_lora):
+                    print(f"Downloading LoRA weights from - HF URL: {hf_lora}")
+                    huggingface_slug = re.search(r"^https?://huggingface.co/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)", hf_lora).group(1)
+                    weight_name = hf_lora.split('/')[-1]
+                    print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {weight_name}")
+                    pipe.load_lora_weights(huggingface_slug, weight_name=weight_name)
+                # Check for Civitai URL
+                elif re.match(r"^https?://civitai.com/api/download/models/[0-9]+\?type=Model&format=SafeTensor", hf_lora):
+                    # split url to get first part of the url, everythin before '?type'
+                    civitai_slug = hf_lora.split('?type')[0]
+                    print(f"Downloading LoRA weights from - Civitai URL: {civitai_slug}")
                     lora_path = self.weights_cache.ensure(hf_lora, file=True)
-                except Exception as e:
-                    raise Exception(f"Error downloading LoRA weights from URL: {e}")
-                pipe.load_lora_weights(lora_path)
-            else:
-                raise Exception(f"Invalid lora, must be either a: HuggingFace path, Replicate model.tar URL, or a URL to a .safetensors file: {hf_lora}")
+                    pipe.load_lora_weights(lora_path)
+                # Check for URL to a .safetensors file
+                elif hf_lora.endswith('.safetensors'):
+                    print(f"Downloading LoRA weights from - safetensor URL: {hf_lora}")
+                    try:
+                        lora_path = self.weights_cache.ensure(hf_lora, file=True)
+                    except Exception as e:
+                        raise Exception(f"Error downloading LoRA weights from URL: {e}")
+                    pipe.load_lora_weights(lora_path)
+                else:
+                    raise Exception(f"Invalid lora, must be either a: HuggingFace path, Replicate model.tar URL, or a URL to a .safetensors file: {hf_lora}")
+            t2 = time.time()
+            print(f"Loading LoRA took: {t2 - t1:.2f} seconds")
         else:
             flux_kwargs["joint_attention_kwargs"] = None
             pipe.unload_lora_weights()
+            self.last_loaded_lora = None
 
         generator = torch.Generator("cuda").manual_seed(seed)
 
@@ -207,9 +206,6 @@ class Predictor(BasePredictor):
         }
 
         output = pipe(**common_args, **flux_kwargs)
-
-        if hf_lora is not None:
-            pipe.unload_lora_weights()
 
         if not disable_safety_checker:
             _, has_nsfw_content = self.run_safety_checker(output.images)

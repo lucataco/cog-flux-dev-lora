@@ -2,3 +2,4 @@ __pycache__
 .cog
 FLUX.1-dev
 safety-cache
+weights-cache
