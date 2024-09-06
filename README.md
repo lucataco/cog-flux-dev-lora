@@ -29,7 +29,7 @@ cog predict -i prompt="a beautiful castle frstingln illustration" -i hf_lora="al
 
 CivitAI
 ```
-cog predict -i prompt="a wizard" -i hf_lora="https://civitai.com/api/download/models/735262?type=Model&format=SafeTensor" -i output_format="png"
+cog predict -i prompt="pnt style Illustration of a wizard" -i hf_lora="https://civitai.com/api/download/models/735262?type=Model&format=SafeTensor" -i output_format="png"
 ```
 
 Replicate

@@ -8,14 +8,20 @@ import time
 import torch
 import subprocess
 import numpy as np
+from PIL import Image
 from typing import List
-from diffusers import FluxPipeline
+from diffusers import (
+    FluxPipeline,
+    FluxImg2ImgPipeline
+)
+from torchvision import transforms
 from weights import WeightsDownloadCache
 from transformers import CLIPImageProcessor
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker
 )
 
+MAX_IMAGE_SIZE = 1440
 MODEL_CACHE = "FLUX.1-dev"
 SAFETY_CACHE = "safety-cache"
 FEATURE_EXTRACTOR = "/src/feature-extractor"
@@ -71,6 +77,16 @@ class Predictor(BasePredictor):
             cache_dir=MODEL_CACHE
         ).to("cuda")
 
+        print("Loading Flux img2img pipeline")
+        self.img2img_pipe = FluxImg2ImgPipeline(
+            transformer=self.txt2img_pipe.transformer,
+            scheduler=self.txt2img_pipe.scheduler,
+            vae=self.txt2img_pipe.vae,
+            text_encoder=self.txt2img_pipe.text_encoder,
+            text_encoder_2=self.txt2img_pipe.text_encoder_2,
+            tokenizer=self.txt2img_pipe.tokenizer,
+            tokenizer_2=self.txt2img_pipe.tokenizer_2,
+        ).to("cuda")
         print("setup took: ", time.time() - start)
 
     @torch.amp.autocast('cuda')
@@ -86,6 +102,21 @@ class Predictor(BasePredictor):
     def aspect_ratio_to_width_height(self, aspect_ratio: str) -> tuple[int, int]:
         return ASPECT_RATIOS[aspect_ratio]
 
+    def get_image(self, image: str):
+        image = Image.open(image).convert("RGB")
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: 2.0 * x - 1.0),
+            ]
+        )
+        img: torch.Tensor = transform(image)
+        return img[None, ...]
+
+    @staticmethod
+    def make_multiple_of_16(n):
+        return ((n + 15) // 16) * 16
+
     @torch.inference_mode()
     def predict(
         self,
@@ -93,7 +124,16 @@ class Predictor(BasePredictor):
         aspect_ratio: str = Input(
             description="Aspect ratio for the generated image",
             choices=list(ASPECT_RATIOS.keys()),
-            default="1:1"),
+            default="1:1"
+        ),
+        image: Path = Input(
+            description="Input image for image to image mode. The aspect ratio of your output will match this image",
+            default=None,
+        ),
+        prompt_strength: float = Input(
+            description="Prompt strength (or denoising strength) when using image to image. 1.0 corresponds to full destruction of information in image.",
+            ge=0,le=1,default=0.8,
+        ),
         num_outputs: int = Input(
             description="Number of images to output.",
             ge=1,
@@ -141,12 +181,38 @@ class Predictor(BasePredictor):
         width, height = self.aspect_ratio_to_width_height(aspect_ratio)
         max_sequence_length=512
         
-        flux_kwargs = {}
+        flux_kwargs = {"width": width, "height": height}
         print(f"Prompt: {prompt}")
-        print("txt2img mode")
-        flux_kwargs["width"] = width
-        flux_kwargs["height"] = height
-        pipe = self.txt2img_pipe
+        device = self.txt2img_pipe.device
+
+        if image:
+            pipe = self.img2img_pipe
+            print("img2img mode")
+            init_image = self.get_image(image)
+            width = init_image.shape[-1]
+            height = init_image.shape[-2]
+            print(f"Input image size: {width}x{height}")
+            # Calculate the scaling factor if the image exceeds MAX_IMAGE_SIZE
+            scale = min(MAX_IMAGE_SIZE / width, MAX_IMAGE_SIZE / height, 1)
+            if scale < 1:
+                width = int(width * scale)
+                height = int(height * scale)
+                print(f"Scaling image down to {width}x{height}")
+
+            # Round image width and height to nearest multiple of 16
+            width = self.make_multiple_of_16(width)
+            height = self.make_multiple_of_16(height)
+            print(f"Input image size set to: {width}x{height}")
+            # Resize
+            init_image = init_image.to(device)
+            init_image = torch.nn.functional.interpolate(init_image, (height, width))
+            init_image = init_image.to(torch.bfloat16)
+            # Set params
+            flux_kwargs["image"] = init_image
+            flux_kwargs["strength"] = prompt_strength
+        else:
+            print("txt2img mode")
+            pipe = self.txt2img_pipe
 
         if hf_lora is not None:
             flux_kwargs["joint_attention_kwargs"] = {"scale": lora_scale}
