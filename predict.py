@@ -253,6 +253,7 @@ class Predictor(BasePredictor):
                     pipe.load_lora_weights(lora_path)
                 else:
                     raise Exception(f"Invalid lora, must be either a: HuggingFace path, Replicate model.tar URL, or a URL to a .safetensors file: {hf_lora}")
+                self.last_loaded_lora = hf_lora
             t2 = time.time()
             print(f"Loading LoRA took: {t2 - t1:.2f} seconds")
         else:
