@@ -36,3 +36,11 @@ Replicate
 ```
 cog predict -i prompt="photo of TOK with purple hair" -i hf_lora="https://replicate.delivery/yhqm/9vSmRCa8Vv7bFtKfCfXTRzTq4X71tZW0LtLCb1l49bTSo8TTA/trained_model.tar" -i output_format="png"
 ```
+
+## License
+
+The code in this repository is licensed under the [Apache-2.0 License](LICENSE).
+
+Flux Dev falls under the [`FLUX.1 [dev]` Non-Commercial License](https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md).
+
+`FLUX.1 [dev]` fine-tuned weights and their outputs are non-commercial by default, but can be used commercially when running on Replicate.
