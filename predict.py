@@ -239,7 +239,7 @@ class Predictor(BasePredictor):
                     if "weight_name" not in parsed_query_params:
                         # Take weight name from last part of path
                         parsed_query_params["weight_name"] = hf_lora_parsed.path.split('/')[-1]
-                    print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {parsed_query_params["weight_name"]}")
+                    print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {parsed_query_params['weight_name']}")
                     pipe.load_lora_weights(huggingface_slug, **parsed_query_params)
                 # Check for Civitai URL
                 elif re.match(r"^https?://civitai.com/api/download/models/[0-9]+\?type=Model&format=SafeTensor", hf_lora):
