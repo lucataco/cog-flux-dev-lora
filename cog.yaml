@@ -3,21 +3,21 @@
 
 build:
   gpu: true
-  cuda: "12.1"
-  python_version: "3.11"
+  cuda: "12.4"
+  python_version: "3.10.14"
   python_packages:
-    - "torch>2.3"
-    - "torchvision"
+    - "torch==2.4.1"
+    - "torchvision==0.19.1"
     - "git+https://github.com/huggingface/diffusers.git@249a9e48e8f8aac4356d5a285c8ba0c600a80f64"
-    - "transformers==4.43.3"
+    - "transformers==4.44.0"
     - "accelerate==0.33.0"
     - "sentencepiece==0.2.0"
     - "protobuf==5.27.3"
-    - "numpy==1.26.4"
+    - "numpy==1.26.0"
     - "pillow==10.4.0"
-    - "peft==0.12.0"
+    - "peft==0.13.0"
 
   run:
-    - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/latest/download/pget_$(uname -s)_$(uname -m)" && chmod +x /usr/local/bin/pget
-
+    - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/download/v0.8.2/pget_linux_x86_64" && chmod +x /usr/local/bin/pget
+    
 predict: "predict.py:Predictor"

@@ -17,6 +17,7 @@ from diffusers import (
 from torchvision import transforms
 from weights import WeightsDownloadCache
 from transformers import CLIPImageProcessor
+from lora_loading_patch import load_lora_into_transformer
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker
 )
@@ -76,6 +77,9 @@ class Predictor(BasePredictor):
             torch_dtype=torch.bfloat16,
             cache_dir=MODEL_CACHE
         ).to("cuda")
+        self.txt2img_pipe.__class__.load_lora_into_transformer = classmethod(
+            load_lora_into_transformer
+        )
 
         print("Loading Flux img2img pipeline")
         self.img2img_pipe = FluxImg2ImgPipeline(
@@ -87,6 +91,10 @@ class Predictor(BasePredictor):
             tokenizer=self.txt2img_pipe.tokenizer,
             tokenizer_2=self.txt2img_pipe.tokenizer_2,
         ).to("cuda")
+        self.img2img_pipe.__class__.load_lora_into_transformer = classmethod(
+            load_lora_into_transformer
+        )
+
         print("setup took: ", time.time() - start)
 
     @torch.amp.autocast('cuda')
@@ -214,7 +222,7 @@ class Predictor(BasePredictor):
             print("txt2img mode")
             pipe = self.txt2img_pipe
 
-        if hf_lora is not None:
+        if hf_lora:
             flux_kwargs["joint_attention_kwargs"] = {"scale": lora_scale}
             t1 = time.time()
             # check if extra_lora is new
@@ -253,6 +261,10 @@ class Predictor(BasePredictor):
                     pipe.load_lora_weights(lora_path)
                 else:
                     raise Exception(f"Invalid lora, must be either a: HuggingFace path, Replicate model.tar URL, or a URL to a .safetensors file: {hf_lora}")
+
+                # Move the entire pipeline to GPU after loading LoRA weights
+                pipe = pipe.to("cuda")
+                
                 self.last_loaded_lora = hf_lora
             t2 = time.time()
             print(f"Loading LoRA took: {t2 - t1:.2f} seconds")
@@ -260,6 +272,9 @@ class Predictor(BasePredictor):
             flux_kwargs["joint_attention_kwargs"] = None
             pipe.unload_lora_weights()
             self.last_loaded_lora = None
+
+        # Ensure the pipeline is on GPU
+        pipe = pipe.to("cuda")
 
         generator = torch.Generator("cuda").manual_seed(seed)
 
