@@ -21,6 +21,7 @@ from lora_loading_patch import load_lora_into_transformer
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker
 )
+from urllib.parse import urlparse, parse_qs
 
 MAX_IMAGE_SIZE = 1440
 MODEL_CACHE = "FLUX.1-dev"
@@ -241,9 +242,15 @@ class Predictor(BasePredictor):
                 elif re.match(r"^https?://huggingface.co", hf_lora):
                     print(f"Downloading LoRA weights from - HF URL: {hf_lora}")
                     huggingface_slug = re.search(r"^https?://huggingface.co/([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)", hf_lora).group(1)
-                    weight_name = hf_lora.split('/')[-1]
-                    print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {weight_name}")
-                    pipe.load_lora_weights(huggingface_slug, weight_name=weight_name)
+                    hf_lora_parsed = urlparse(hf_lora)
+                    parsed_query_params = parse_qs(hf_lora_parsed.query)
+                    if "weight_name" not in parsed_query_params:
+                        # Take weight name from last part of path
+                        parsed_query_params["weight_name"] = hf_lora_parsed.path.split('/')[-1]
+                    # Convert list values by taking the first of each
+                    parsed_query_params = {k: (v[0] if isinstance(v, list) and v else v) for k, v in parsed_query_params.items()}
+                    print(f"HuggingFace slug from URL: {huggingface_slug}, weight name: {parsed_query_params['weight_name']}")
+                    pipe.load_lora_weights(huggingface_slug, **parsed_query_params)
                 # Check for Civitai URL
                 elif re.match(r"^https?://civitai.com/api/download/models/[0-9]+\?type=Model&format=SafeTensor", hf_lora):
                     # split url to get first part of the url, everythin before '?type'
