@@ -5,6 +5,7 @@ from cog import BasePredictor, Input, Path
 import os
 import re
 import time
+from hotswap import hotswap_adapter
 import torch
 import subprocess
 import numpy as np
@@ -54,7 +55,7 @@ def download_weights(url, dest, file=False):
     print("downloading took: ", time.time() - start)
 
 class Predictor(BasePredictor):
-    def setup(self) -> None:
+    def setup(self, compile=False) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
         start = time.time()
 
@@ -95,7 +96,37 @@ class Predictor(BasePredictor):
             load_lora_into_transformer
         )
 
+        base_lora = "https://replicate.delivery/yhqm/hNeuharNetjpfpHVlUyPs8O8kygdciYIi8dNzj3K5bT8xllmA/trained_model.tar"
+        local_weights_cache = self.weights_cache.ensure(base_lora)
+        lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/lora.safetensors")
+        self.txt2img_pipe.load_lora_weights(lora_path, adapter_name="main")
+        self.txt2img_pipe.to("cuda")
+
         print("setup took: ", time.time() - start)
+
+        if compile:
+            st = time.time()
+            print("compiling")
+            self.txt2img_pipe.transformer = torch.compile(self.txt2img_pipe.transformer)
+
+            self.predict(
+                "a photo of a TOK dog",
+                "1:1",
+                None,
+                None,
+                1,
+                28,
+                3.5,
+                1234,
+                "png",
+                80,
+                "https://replicate.delivery/yhqm/hNeuharNetjpfpHVlUyPs8O8kygdciYIi8dNzj3K5bT8xllmA/trained_model.tar",
+                1.1,
+                True
+            )
+
+            print(f"compiled in {time.time() - st}")
+
 
     @torch.amp.autocast('cuda')
     def run_safety_checker(self, image):
@@ -227,7 +258,7 @@ class Predictor(BasePredictor):
             t1 = time.time()
             # check if extra_lora is new
             if hf_lora != self.last_loaded_lora:
-                pipe.unload_lora_weights()
+                #pipe.unload_lora_weights()
                 if re.match(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$", hf_lora):
                     print(f"Downloading LoRA weights from - HF path: {hf_lora}")
                     pipe.load_lora_weights(hf_lora)
@@ -235,8 +266,9 @@ class Predictor(BasePredictor):
                 elif re.match(r"^https?://replicate.delivery/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/trained_model.tar", hf_lora):
                     print(f"Downloading LoRA weights from - Replicate URL: {hf_lora}")
                     local_weights_cache = self.weights_cache.ensure(hf_lora)
-                    lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/lora.safetensors")
-                    pipe.load_lora_weights(lora_path)
+                    lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/")
+                    hotswap_adapter(pipe, lora_path, "main", "cuda")
+                    # pipe.load_lora_weights(lora_path)
                 # Check for Huggingface URL
                 elif re.match(r"^https?://huggingface.co", hf_lora):
                     print(f"Downloading LoRA weights from - HF URL: {hf_lora}")
@@ -270,7 +302,8 @@ class Predictor(BasePredictor):
             print(f"Loading LoRA took: {t2 - t1:.2f} seconds")
         else:
             flux_kwargs["joint_attention_kwargs"] = None
-            pipe.unload_lora_weights()
+            # todo - replace with hotswapping an empty matrix
+            # pipe.unload_lora_weights()
             self.last_loaded_lora = None
 
         # Ensure the pipeline is on GPU
@@ -297,7 +330,7 @@ class Predictor(BasePredictor):
             if not disable_safety_checker and has_nsfw_content[i]:
                 print(f"NSFW content detected in image {i}")
                 continue
-            output_path = f"/tmp/out-{i}.{output_format}"
+            output_path = f"out-{time.time()}-{i}.{output_format}"
             if output_format != 'png':
                 image.save(output_path, quality=output_quality, optimize=True)
             else:

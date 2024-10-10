@@ -112,6 +112,10 @@ class WeightsDownloadCache:
         :param dest: Path to store weights file.
         :param file: If True, download the file as is, otherwise extract it.
         """
+        if os.path.exists(dest):
+            print("File exists on disk, assuming the cache was warmed")
+            return
+        
         print("Ensuring enough disk space...")
         while not self._has_enough_space() and len(self.lru_paths) > 0:
             self._remove_least_recent()
