@@ -18,7 +18,7 @@ from diffusers import (
 from torchvision import transforms
 from weights import WeightsDownloadCache
 from transformers import CLIPImageProcessor
-from lora_loading_patch import load_lora_into_transformer
+from lora_loading_patch import load_lora_into_transformer, lora_state_dict
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker
 )
@@ -55,7 +55,7 @@ def download_weights(url, dest, file=False):
     print("downloading took: ", time.time() - start)
 
 class Predictor(BasePredictor):
-    def setup(self, compile=False) -> None:
+    def setup(self, compile=True) -> None:
         """Load the model into memory to make running multiple predictions efficient"""
         start = time.time()
 
@@ -78,9 +78,12 @@ class Predictor(BasePredictor):
             torch_dtype=torch.bfloat16,
             cache_dir=MODEL_CACHE
         ).to("cuda")
+        # patched for fast loading
         self.txt2img_pipe.__class__.load_lora_into_transformer = classmethod(
             load_lora_into_transformer
         )
+        # patched for selectable rank for loras for zero padding during compilation
+        self.txt2img_pipe.__class__.lora_state_dict = classmethod(lora_state_dict)
 
         print("Loading Flux img2img pipeline")
         self.img2img_pipe = FluxImg2ImgPipeline(
@@ -95,11 +98,15 @@ class Predictor(BasePredictor):
         self.img2img_pipe.__class__.load_lora_into_transformer = classmethod(
             load_lora_into_transformer
         )
+        self.img2img_pipe.__class__.lora_state_dict = classmethod(lora_state_dict)
 
-        base_lora = "https://replicate.delivery/yhqm/hNeuharNetjpfpHVlUyPs8O8kygdciYIi8dNzj3K5bT8xllmA/trained_model.tar"
+        # rank to pad all loras to
+        self.rank = 128
+
+        base_lora = "https://replicate.delivery/yhqm/IosLs4j02TKeQSSiA0DxEsLKuf3fu0iJVd9Eelmqynoxf6naC/trained_model.tar"
         local_weights_cache = self.weights_cache.ensure(base_lora)
         lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/lora.safetensors")
-        self.txt2img_pipe.load_lora_weights(lora_path, adapter_name="main")
+        self.txt2img_pipe.load_lora_weights(lora_path, adapter_name="main", pad_rank=self.rank)
         self.txt2img_pipe.to("cuda")
 
         print("setup took: ", time.time() - start)
@@ -110,7 +117,7 @@ class Predictor(BasePredictor):
             self.txt2img_pipe.transformer = torch.compile(self.txt2img_pipe.transformer)
 
             self.predict(
-                "a photo of a TOK dog",
+                "a photo of ZIKI in the forest",
                 "1:1",
                 None,
                 None,
@@ -120,7 +127,7 @@ class Predictor(BasePredictor):
                 1234,
                 "png",
                 80,
-                "https://replicate.delivery/yhqm/hNeuharNetjpfpHVlUyPs8O8kygdciYIi8dNzj3K5bT8xllmA/trained_model.tar",
+                "https://replicate.delivery/yhqm/IosLs4j02TKeQSSiA0DxEsLKuf3fu0iJVd9Eelmqynoxf6naC/trained_model.tar",
                 1.1,
                 True
             )
@@ -267,7 +274,7 @@ class Predictor(BasePredictor):
                     print(f"Downloading LoRA weights from - Replicate URL: {hf_lora}")
                     local_weights_cache = self.weights_cache.ensure(hf_lora)
                     lora_path = os.path.join(local_weights_cache, "output/flux_train_replicate/")
-                    hotswap_adapter(pipe, lora_path, "main", "cuda")
+                    hotswap_adapter(pipe, lora_path, "main", "cuda", self.rank)
                     # pipe.load_lora_weights(lora_path)
                 # Check for Huggingface URL
                 elif re.match(r"^https?://huggingface.co", hf_lora):

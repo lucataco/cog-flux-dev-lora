@@ -16,6 +16,7 @@ from __future__ import annotations
 from operator import attrgetter
 
 import torch
+import torch.nn.functional as F
 
 from peft.config import PeftConfig
 from peft.mapping import PEFT_TYPE_TO_CONFIG_MAPPING
@@ -58,6 +59,25 @@ def _insert_adapter_name_into_state_dict(
         else:
             peft_model_state_dict[key] = val
     return peft_model_state_dict
+
+
+def rank_up_state_dict(state_dict: dict[str, torch.Tensor], pad_rank: int):
+    """
+    For hotswapping a torch.compiled lora we need to ensure that all loras are the same rank. 
+    So this'll do that, in a terrible hacky way. 
+    """
+    for key, val in state_dict.items():
+        if "lora_A" in key:
+            if val.shape[0] < pad_rank:
+                state_dict[key] = F.pad(val, (0, 0, 0, pad_rank - val.shape[0]), "constant", 0)
+            elif val.shape[0] > pad_rank:
+                raise Exception("Your rank is TOO BIG!")
+        elif "lora_B" in key:
+            if val.shape[1] < pad_rank:
+                state_dict[key] = F.pad(val, (0, pad_rank - val.shape[1], 0, 0), "constant", 0)
+            elif val.shape[1] > pad_rank:
+                raise Exception("Your rank is TOO BIG!")
+    return state_dict
 
 
 def hotswap_adapter_from_state_dict(model, state_dict, adapter_name, parameter_prefix="lora_"):
@@ -152,7 +172,7 @@ def _check_hotswap_configs_compatible(config0: PeftConfig, config1: PeftConfig) 
             raise ValueError(f"Configs are incompatible: for {key}, {val0} != {val1}")
 
 
-def hotswap_adapter(pipe, model_name_or_path, adapter_name, torch_device="cuda", **kwargs):
+def hotswap_adapter(pipe, model_name_or_path, adapter_name, torch_device="cuda", pad_rank=None, **kwargs):
     """Substitute old adapter data with new adapter data, keeping the rest the same.
     As of now, only LoRA is supported.
     This function is useful when you want to replace the loaded adapter with a new adapter. The adapter name will
@@ -186,7 +206,8 @@ def hotswap_adapter(pipe, model_name_or_path, adapter_name, torch_device="cuda",
     peft_model_state_dict = _insert_adapter_name_into_state_dict(
         state_dict, adapter_name=adapter_name, parameter_prefix=parameter_prefix
     )
-
+    if pad_rank:
+        peft_model_state_dict = rank_up_state_dict(peft_model_state_dict, pad_rank)
     hotswap_adapter_from_state_dict(
         model=pipe.transformer,
         state_dict=peft_model_state_dict,

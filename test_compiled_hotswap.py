@@ -89,3 +89,6 @@ def test_compile_different_rank():
         1.1,
         True
     )
+
+if __name__ == '__main__': 
+    test_compile_different_rank()
